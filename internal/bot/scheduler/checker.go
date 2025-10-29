@@ -245,8 +245,9 @@ func (vc *VacancyChecker) markVacanciesAsSeen(userID int64, vacancies []headhunt
 
 func buildSearchParams(filters map[string]string) headhunter.VacancySearchParams {
 	params := headhunter.VacancySearchParams{
-		Page:    0,
-		PerPage: 20,
+		Page:                0,
+		PerPage:             20,
+		PublishedWithinDays: models.DefaultPublishedWithinDays,
 	}
 
 	if text, ok := filters[models.FilterTypeText]; ok {
@@ -270,6 +271,27 @@ func buildSearchParams(filters map[string]string) headhunter.VacancySearchParams
 	if schedule, ok := filters[models.FilterTypeSchedule]; ok {
 		params.Schedule = schedule
 	}
+
+	days := params.PublishedWithinDays
+	if raw, ok := filters[models.FilterTypePublishedWithin]; ok {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			if parsed < models.MinPublishedWithinDays {
+				parsed = models.MinPublishedWithinDays
+			}
+			if parsed > models.MaxPublishedWithinDays {
+				parsed = models.MaxPublishedWithinDays
+			}
+			days = parsed
+		}
+	}
+
+	params.PublishedWithinDays = days
+
+	now := time.Now()
+	dateTo := now
+	from := now.Add(-time.Duration(days) * 24 * time.Hour)
+	params.DateTo = &dateTo
+	params.DateFrom = &from
 
 	return params
 }

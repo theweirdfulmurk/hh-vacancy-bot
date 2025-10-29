@@ -144,10 +144,10 @@ func (s *Store) GetUnseenVacancies(ctx context.Context, userID int64, vacancyIDs
 	}
 
 	query := `
-		SELECT unnest($1::text[]) AS id
-		EXCEPT
-		SELECT vacancy_id FROM user_seen_vacancies WHERE user_id = $2
-	`
+                SELECT id FROM unnest(?::text[]) AS t(id)
+                EXCEPT
+                SELECT vacancy_id FROM user_seen_vacancies WHERE user_id = ?
+        `
 
 	var unseenIDs []string
 

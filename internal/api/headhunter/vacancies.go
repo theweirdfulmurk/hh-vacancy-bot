@@ -5,18 +5,22 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"time"
 
 	"go.uber.org/zap"
 )
 
 type VacancySearchParams struct {
-	Text       string 
-	Area       string // area id
-	Experience string 
-	Salary     int    
-	Schedule   string 
-	Page       int    
-	PerPage    int   
+	Text                string
+	Area                string // area id
+	Experience          string
+	Salary              int
+	Schedule            string
+	Page                int
+	PerPage             int
+	DateFrom            *time.Time
+	DateTo              *time.Time
+	PublishedWithinDays int
 }
 
 func (c *Client) SearchVacancies(ctx context.Context, params VacancySearchParams) (*VacancySearchResponse, error) {
@@ -51,7 +55,15 @@ func (c *Client) SearchVacancies(ctx context.Context, params VacancySearchParams
 	if params.PerPage > 0 {
 		queryParams.Set("per_page", strconv.Itoa(params.PerPage))
 	} else {
-		queryParams.Set("per_page", "20") 
+		queryParams.Set("per_page", "20")
+	}
+
+	if params.DateFrom != nil {
+		queryParams.Set("date_from", params.DateFrom.Format("2006-01-02T15:04:05-0700"))
+	}
+
+	if params.DateTo != nil {
+		queryParams.Set("date_to", params.DateTo.Format("2006-01-02T15:04:05-0700"))
 	}
 
 	data, err := c.get(ctx, "/vacancies", queryParams)
