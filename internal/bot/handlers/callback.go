@@ -32,22 +32,42 @@ func HandleCallback(ctx *Context) tele.HandlerFunc {
 			zap.String("callback_id", cb.ID),
 		)
 
-		payload := strings.TrimPrefix(cb.Data, "\f")
+		rawPayload := strings.TrimPrefix(cb.Data, "\f")
 		unique := cb.Unique
-		if unique == "" {
-			unique = payload
+
+		payload := ""
+		if rawPayload != "" {
+			parts := strings.SplitN(rawPayload, "|", 2)
+			if unique == "" {
+				unique = parts[0]
+			}
+			if len(parts) > 1 {
+				payload = parts[1]
+			}
+		} else if unique == "" {
+			unique = rawPayload
 		}
 
-		uniqueParts := strings.Split(unique, ":")
+		uniqueParts := []string{}
+		if unique != "" {
+			uniqueParts = strings.Split(unique, ":")
+		}
+
 		payloadParts := []string{}
 		if payload != "" {
 			payloadParts = strings.Split(payload, ":")
 		}
 
-		action := uniqueParts[0]
+		action := ""
+		if len(uniqueParts) > 0 && uniqueParts[0] != "" {
+			action = uniqueParts[0]
+		} else if len(payloadParts) > 0 {
+			action = payloadParts[0]
+		}
 
 		ctx.Logger.Info("parsed callback",
 			zap.String("unique", unique),
+			zap.String("raw_payload", rawPayload),
 			zap.String("payload", payload),
 			zap.Strings("unique_parts", uniqueParts),
 			zap.Strings("payload_parts", payloadParts),
@@ -73,6 +93,7 @@ func HandleCallback(ctx *Context) tele.HandlerFunc {
 			ctx.Logger.Warn("unknown callback action",
 				zap.String("action", action),
 				zap.String("unique", unique),
+				zap.String("raw_payload", rawPayload),
 				zap.String("payload", payload),
 			)
 			return c.Respond(&tele.CallbackResponse{Text: "❓ Неизвестное действие"})
@@ -234,6 +255,8 @@ func handleVacancyPage(ctx *Context, c tele.Context, parts []string) error {
 			ctx.Logger.Warn("failed to edit pagination message", zap.Error(err))
 		}
 
+		cleanupPaginationMessages(ctx, c, userID)
+
 		go cacheVacancies(ctx, response.Items)
 
 		if len(response.Items) == 0 {
@@ -243,15 +266,29 @@ func handleVacancyPage(ctx *Context, c tele.Context, parts []string) error {
 			return c.Respond(&tele.CallbackResponse{Text: "ℹ️ Нет вакансий"})
 		}
 
+		var messageIDs []int
+
 		header := fmt.Sprintf("📄 *Вакансии — страница %d/%d*", targetPage+1, totalPages)
-		if err := c.Send(header, tele.ModeMarkdownV2); err != nil {
+		headerMsg, err := c.Bot().Send(
+			c.Chat(),
+			header,
+			&tele.SendOptions{ParseMode: tele.ModeMarkdownV2},
+		)
+		if err != nil {
 			ctx.Logger.Error("failed to send pagination header", zap.Error(err))
+		} else {
+			messageIDs = append(messageIDs, headerMsg.ID)
 		}
 
-		if err := deliverVacancyCards(ctx, c, response.Items, userID); err != nil {
+		cardMessageIDs, err := deliverVacancyCards(ctx, c, response.Items, userID)
+		if err != nil {
 			ctx.Logger.Error("failed to send vacancies page", zap.Error(err))
 			return c.Respond(&tele.CallbackResponse{Text: "😔 Ошибка отправки"})
 		}
+
+		messageIDs = append(messageIDs, cardMessageIDs...)
+
+		rememberPaginationMessages(ctx, userID, messageIDs)
 
 		go markVacanciesAsSeen(ctx, userID, response.Items)
 
