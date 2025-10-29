@@ -12,7 +12,7 @@ import (
 	tele "gopkg.in/telebot.v3"
 )
 
-const defaultLinguistQuery = "лингвист OR переводчик OR филолог"
+const defaultLinguistQuery = "лингвист OR переводчик OR NLP"
 
 // /start command
 func HandleStart(ctx *Context) tele.HandlerFunc {
