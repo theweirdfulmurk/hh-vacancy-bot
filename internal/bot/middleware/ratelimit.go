@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	MaxRequestsPerMinute = 20
+	MaxRequestsPerMinute = 50
 )
 
 func RateLimit(cache *redis.Cache, logger *zap.Logger) tele.MiddlewareFunc {
@@ -60,7 +60,7 @@ func CheckHHAPIRateLimit(cache *redis.Cache, logger *zap.Logger) error {
 	count, err := cache.GetHHAPIRateLimit(ctx)
 	if err != nil {
 		logger.Error("failed to check HH API rate limit", zap.Error(err))
-		return nil 
+		return nil
 	}
 
 	if count > 50 {

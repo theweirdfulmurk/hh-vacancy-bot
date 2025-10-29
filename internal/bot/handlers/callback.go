@@ -18,23 +18,41 @@ func HandleCallback(ctx *Context) tele.HandlerFunc {
 	return func(c tele.Context) error {
 		cb := c.Callback()
 		if cb == nil {
+			ctx.Logger.Warn("callback is nil")
 			return nil
 		}
 
-		// 1) handle unique-based callbacks (telebot style with payload)
-		switch cb.Unique {
-		case "choose_area":
-			return handleChooseAreaPayload(ctx, c, cb.Data) // cb.Data = areaID
-		}
+		// Log callback for debugging
+		ctx.Logger.Info("received callback",
+			zap.String("data", cb.Data),
+			zap.String("unique", cb.Unique),
+			zap.Int64("user_id", c.Sender().ID),
+			zap.String("callback_id", cb.ID),
+		)
 
-		// 2) legacy colon-based callbacks you already use
+		// Parse callback data
 		data := cb.Data
+		
+		// Remove form feed character if present (telebot adds \f prefix)
+		if len(data) > 0 && data[0] == '\f' {
+			data = data[1:]
+		}
+		
 		parts := strings.Split(data, ":")
+		ctx.Logger.Info("parsed callback",
+			zap.Strings("parts", parts),
+			zap.Int("parts_count", len(parts)),
+		)
+		
 		if len(parts) < 1 {
+			ctx.Logger.Warn("invalid callback format", zap.String("data", data))
 			return c.Respond(&tele.CallbackResponse{Text: "❌ Неверный формат"})
 		}
 		action := parts[0]
+		
+		ctx.Logger.Info("routing callback", zap.String("action", action))
 
+		// Route to appropriate handler
 		switch action {
 		case "filter_delete":
 			return handleFilterDelete(ctx, c, parts)
@@ -48,9 +66,13 @@ func HandleCallback(ctx *Context) tele.HandlerFunc {
 			return handleConfirmYes(ctx, c)
 		case "confirm_no":
 			return handleConfirmNo(ctx, c)
-		case "choose_area": // if you ever send "choose_area:<id>"
+		case "choose_area":
 			return handleChooseArea(ctx, c, parts)
 		default:
+			ctx.Logger.Warn("unknown callback action",
+				zap.String("action", action),
+				zap.String("data", data),
+			)
 			return c.Respond(&tele.CallbackResponse{Text: "❓ Неизвестное действие"})
 		}
 	}
@@ -70,37 +92,27 @@ func handleFilterDelete(ctx *Context, c tele.Context, parts []string) error {
 	defer cancel()
 
 	if err := ctx.Store.DeleteFilter(dbCtx, userID, filterType); err != nil {
-		ctx.Logger.Error("failed to delete filter",
-			zap.Int64("user_id", userID),
-			zap.String("filter_type", filterType),
-			zap.Error(err),
-		)
-		return c.Respond(&tele.CallbackResponse{
-			Text: "😔 Ошибка при удалении фильтра",
-		})
+		ctx.Logger.Error("failed to delete filter", zap.Error(err))
+		return c.Respond(&tele.CallbackResponse{Text: "😔 Ошибка удаления"})
 	}
 
-	// Update message with remaining filters
-	filters, err := ctx.Store.GetUserFilters(dbCtx, userID)
-	if err != nil {
-		ctx.Logger.Error("failed to get filters", zap.Error(err))
-		return c.Respond(&tele.CallbackResponse{Text: "✅ Фильтр удален"})
-	}
-
-	var message string
-	if len(filters) == 0 {
-		message = "ℹ️ У вас нет установленных фильтров"
-	} else {
-		message = utils.FormatFiltersMessage(filters)
-	}
-
-	if err := c.Edit(message, utils.FiltersMenuKeyboard(), tele.ModeMarkdownV2); err != nil {
+	displayName := getFilterDisplayName(filterType)
+	
+	// Try to update the message
+	if err := c.Edit(
+		fmt.Sprintf("✅ Фильтр *%s* удалён", utils.EscapeMarkdown(displayName)),
+		utils.FiltersMenuKeyboard(),
+		tele.ModeMarkdownV2,
+	); err != nil {
 		ctx.Logger.Warn("failed to edit message", zap.Error(err))
+		return c.Send(
+			fmt.Sprintf("✅ Фильтр *%s* удалён", utils.EscapeMarkdown(displayName)),
+			utils.FiltersMenuKeyboard(),
+			tele.ModeMarkdownV2,
+		)
 	}
 
-	return c.Respond(&tele.CallbackResponse{
-		Text: "✅ Фильтр удален",
-	})
+	return c.Respond(&tele.CallbackResponse{Text: "✅ Удалено"})
 }
 
 // ==================== Settings ====================
@@ -114,27 +126,22 @@ func handleSettingsToggle(ctx *Context, c tele.Context) error {
 	user, err := ctx.Store.GetUser(dbCtx, userID)
 	if err != nil {
 		ctx.Logger.Error("failed to get user", zap.Error(err))
-		return c.Respond(&tele.CallbackResponse{
-			Text: "😔 Ошибка при получении данных",
-		})
+		return c.Respond(&tele.CallbackResponse{Text: "😔 Ошибка"})
 	}
 
 	newState := !user.CheckEnabled
+	user.CheckEnabled = newState
 
-	if err := ctx.Store.SetCheckEnabled(dbCtx, userID, newState); err != nil {
-		ctx.Logger.Error("failed to toggle check",
-			zap.Int64("user_id", userID),
-			zap.Error(err),
-		)
-		return c.Respond(&tele.CallbackResponse{
-			Text: "😔 Ошибка при изменении настроек",
-		})
+	if err := ctx.Store.UpdateUser(dbCtx, user); err != nil {
+		ctx.Logger.Error("failed to update user", zap.Error(err))
+		return c.Respond(&tele.CallbackResponse{Text: "😔 Ошибка сохранения"})
 	}
 
-	user.CheckEnabled = newState
-	message := utils.FormatSettingsMessage(user)
-
-	if err := c.Edit(message, utils.SettingsKeyboard(newState), tele.ModeMarkdownV2); err != nil {
+	// Update the keyboard
+	if err := c.Edit(
+		"⚙️ Настройки уведомлений:",
+		utils.SettingsKeyboard(newState),
+	); err != nil {
 		ctx.Logger.Warn("failed to edit message", zap.Error(err))
 	}
 
@@ -147,10 +154,6 @@ func handleSettingsToggle(ctx *Context, c tele.Context) error {
 }
 
 func handleSettingsInterval(ctx *Context, c tele.Context, parts []string) error {
-	if len(parts) < 2 {
-		return c.Respond(&tele.CallbackResponse{Text: "❌ Неверный формат"})
-	}
-
 	// This callback is for showing interval selection
 	return c.Send(
 		"⏰ Выберите интервал проверки новых вакансий:",
@@ -175,11 +178,7 @@ func handleVacancyPage(ctx *Context, c tele.Context, parts []string) error {
 // ==================== Confirmation ====================
 
 func handleConfirmYes(ctx *Context, c tele.Context) error {
-	// Check what we're confirming based on the message
-	if c.Message() != nil && strings.Contains(c.Message().Text, "очистить все фильтры") {
-		return confirmClearFilters(ctx, c)
-	}
-
+	// This is just a pass-through - actual confirmation logic is in filters.go
 	return c.Respond(&tele.CallbackResponse{Text: "✅ Подтверждено"})
 }
 
@@ -199,44 +198,88 @@ func handleConfirmNo(ctx *Context, c tele.Context) error {
 	return c.Respond(&tele.CallbackResponse{Text: "❌ Отменено"})
 }
 
+// ==================== Area Selection ====================
+
 func handleChooseArea(ctx *Context, c tele.Context, parts []string) error {
 	if len(parts) < 2 {
+		ctx.Logger.Warn("choose_area callback without area ID", zap.Strings("parts", parts))
 		return c.Respond(&tele.CallbackResponse{Text: "❌ Неверный формат"})
 	}
+	
 	areaID := parts[1]
 	userID := c.Sender().ID
+
+	ctx.Logger.Info("handling area selection",
+		zap.Int64("user_id", userID),
+		zap.String("area_id", areaID),
+	)
 
 	dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// persist chosen area
+	// Save the selected area as a filter
 	filter := &models.UserFilter{
 		UserID:      userID,
 		FilterType:  models.FilterTypeArea,
 		FilterValue: areaID,
 	}
+	
 	if err := ctx.Store.SaveFilter(dbCtx, filter); err != nil {
-		ctx.Logger.Error("failed to save city filter (cb)", zap.Error(err))
+		ctx.Logger.Error("failed to save city filter", zap.Error(err))
 		return c.Respond(&tele.CallbackResponse{Text: "😔 Ошибка при сохранении"})
 	}
 
-	name := "город выбран"
-	if ar, err := ctx.HHClient.GetArea(dbCtx, areaID); err == nil && ar != nil {
-		name = ar.Name
+	// Get area name for display
+	areaName := "Город выбран"
+	if area, err := ctx.HHClient.GetArea(dbCtx, areaID); err == nil && area != nil {
+		areaName = area.Name
+		ctx.Logger.Info("area name resolved", zap.String("name", areaName))
+	} else {
+		ctx.Logger.Warn("failed to get area name", zap.Error(err))
 	}
 
-	_ = clearUserState(ctx, userID)
+	// Clear conversation state
+	if err := clearUserState(ctx, userID); err != nil {
+		ctx.Logger.Warn("failed to clear state", zap.Error(err))
+	}
 
-	// try to edit previous message; if fails, just ack
-	if c.Message() != nil {
-		_ = c.Edit(
-			fmt.Sprintf("✅ Город установлен: *%s*", utils.EscapeMarkdown(name)),
+	// Update the message with the result
+	editErr := c.Edit(
+		fmt.Sprintf("✅ Город установлен: *%s*", utils.EscapeMarkdown(areaName)),
+		utils.FiltersMenuKeyboard(),
+		tele.ModeMarkdownV2,
+	)
+	
+	if editErr != nil {
+		ctx.Logger.Warn("failed to edit message", zap.Error(editErr))
+		// Fallback: send new message if edit fails
+		return c.Send(
+			fmt.Sprintf("✅ Город установлен: *%s*", utils.EscapeMarkdown(areaName)),
 			utils.FiltersMenuKeyboard(),
 			tele.ModeMarkdownV2,
 		)
 	}
 
 	return c.Respond(&tele.CallbackResponse{Text: "✅ Выбрано"})
+}
+
+// ==================== Helpers ====================
+
+func getFilterDisplayName(filterType string) string {
+	switch filterType {
+	case "text":
+		return "Текст"
+	case "area":
+		return "Город"
+	case "salary":
+		return "Зарплата"
+	case "experience":
+		return "Опыт"
+	case "schedule":
+		return "График"
+	default:
+		return filterType
+	}
 }
 
 // ==================== Inline Keyboards Generators ====================
@@ -298,55 +341,4 @@ func InlineConfirmKeyboard() *tele.ReplyMarkup {
 	menu.Inline(menu.Row(btnYes, btnNo))
 
 	return menu
-}
-
-// ==================== Helpers ====================
-
-func handleChooseAreaPayload(ctx *Context, c tele.Context, areaID string) error {
-	userID := c.Sender().ID
-
-	dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	filter := &models.UserFilter{
-		UserID:      userID,
-		FilterType:  models.FilterTypeArea,
-		FilterValue: areaID,
-	}
-	if err := ctx.Store.SaveFilter(dbCtx, filter); err != nil {
-		ctx.Logger.Error("failed to save city filter (payload)", zap.Error(err))
-		return c.Respond(&tele.CallbackResponse{Text: "😔 Ошибка сохранения"})
-	}
-
-	name := "Город выбран"
-	if ar, err := ctx.HHClient.GetArea(dbCtx, areaID); err == nil && ar != nil {
-		name = ar.Name
-	}
-	_ = clearUserState(ctx, userID)
-
-	if c.Message() != nil {
-		_ = c.Edit(
-			fmt.Sprintf("✅ Город установлен: *%s*", utils.EscapeMarkdown(name)),
-			utils.FiltersMenuKeyboard(),
-			tele.ModeMarkdownV2,
-		)
-	}
-	return c.Respond(&tele.CallbackResponse{Text: "✅ Выбрано"})
-}
-
-func getFilterDisplayName(filterType string) string {
-	switch filterType {
-	case "text":
-		return "Текст"
-	case "area":
-		return "Город"
-	case "salary":
-		return "Зарплата"
-	case "experience":
-		return "Опыт"
-	case "schedule":
-		return "График"
-	default:
-		return filterType
-	}
 }

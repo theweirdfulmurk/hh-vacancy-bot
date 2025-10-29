@@ -523,7 +523,8 @@ func parseIntervalText(text string) int {
 }
 
 func toggleNotifications(ctx *Context, c tele.Context) error {
-	return HandleSettings(ctx)(c)
+	text := strings.TrimSpace(c.Text())
+	return HandleSettingsText(ctx, c, text)
 }
 
 func changeInterval(ctx *Context, c tele.Context) error {

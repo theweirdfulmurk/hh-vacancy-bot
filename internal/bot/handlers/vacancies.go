@@ -180,7 +180,7 @@ func cacheVacancies(ctx *Context, vacancies []headhunter.VacancyItem) {
 			Area:        item.Area.Name,
 			AreaID:      item.Area.ID,
 			URL:         item.AlternateURL,
-			PublishedAt: item.PublishedAt,
+			PublishedAt: item.PublishedAt.Time,
 		}
 
 		if item.Employer.Name != "" {

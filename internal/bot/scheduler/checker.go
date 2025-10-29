@@ -281,7 +281,7 @@ func convertToDBVacancy(item *headhunter.VacancyItem) *models.Vacancy {
 		Area:        item.Area.Name,
 		AreaID:      item.Area.ID,
 		URL:         item.AlternateURL,
-		PublishedAt: item.PublishedAt,
+		PublishedAt: item.PublishedAt.Time,
 	}
 
 	if item.Employer.Name != "" {

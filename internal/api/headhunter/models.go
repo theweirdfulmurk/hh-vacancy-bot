@@ -1,6 +1,44 @@
 package headhunter
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+// HHTime - custom type for parsing time format of HeadHunter API
+type HHTime struct {
+	time.Time
+}
+
+func (t *HHTime) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), "\"")
+	if s == "null" || s == "" {
+		t.Time = time.Time{}
+		return nil
+	}
+	
+	if len(s) > 6 {
+		lastPlus := strings.LastIndex(s, "+")
+		lastMinus := strings.LastIndex(s, "-")
+		tzIndex := lastPlus
+		if lastMinus > tzIndex {
+			tzIndex = lastMinus
+		}
+		
+		if tzIndex > 0 && len(s)-tzIndex == 5 {
+			s = s[:tzIndex+3] + ":" + s[tzIndex+3:]
+		}
+	}
+	
+	parsed, err := time.Parse("2006-01-02T15:04:05-07:00", s)
+	if err != nil {
+		return err
+	}
+	
+	t.Time = parsed
+	return nil
+}
+
 
 type VacancySearchResponse struct {
 	Items      []VacancyItem `json:"items"`
@@ -26,8 +64,8 @@ type VacancyItem struct {
 	Address         *Address       `json:"address"`
 	ResponseURL     *string        `json:"response_url"`
 	SortPointDistance *float64     `json:"sort_point_distance"`
-	PublishedAt     time.Time      `json:"published_at"`
-	CreatedAt       time.Time      `json:"created_at"`
+	PublishedAt     HHTime		   `json:"published_at"`
+	CreatedAt       HHTime         `json:"created_at"`
 	Archived        bool           `json:"archived"`
 	ApplyAlternateURL string       `json:"apply_alternate_url"`
 	ShowLogoInSearch *bool         `json:"show_logo_in_search"`
@@ -149,7 +187,7 @@ type VacancyDetail struct {
 	QuickResponsesAllowed bool            `json:"quick_responses_allowed"`
 	BillingType         *IDName           `json:"billing_type"`
 	AllowMessages       bool              `json:"allow_messages"`
-	InitialCreatedAt    time.Time         `json:"initial_created_at"`
+	InitialCreatedAt    HHTime	          `json:"initial_created_at"`
 	Negotiations        interface{}       `json:"negotiations"`
 	HasVacancyDescription bool            `json:"has_vacancy_description"`
 }

@@ -22,7 +22,7 @@ func FormatVacancy(vacancy *headhunter.VacancyItem) string {
 
 	// Paycheck
 	if vacancy.Salary != nil {
-		salaryStr := FormatSalary(vacancy.Salary)
+		salaryStr := EscapeMarkdown(FormatSalary(vacancy.Salary))
 		sb.WriteString(fmt.Sprintf("💰 *Зарплата:* %s\n", salaryStr))
 	} else {
 		sb.WriteString("💰 *Зарплата:* не указана\n")
@@ -48,7 +48,7 @@ func FormatVacancy(vacancy *headhunter.VacancyItem) string {
 
 	// Published date
 	publishedDate := vacancy.PublishedAt.Format("02.01.2006")
-	sb.WriteString(fmt.Sprintf("📅 *Опубликовано:* %s\n", publishedDate))
+	sb.WriteString(fmt.Sprintf("📅 *Опубликовано:* %s\n", EscapeMarkdown(publishedDate)))
 
 	// Link
 	sb.WriteString(fmt.Sprintf("\n🔗 [Открыть вакансию](%s)", vacancy.AlternateURL))
@@ -72,11 +72,12 @@ func FormatSalary(salary *headhunter.Salary) string {
 	}
 
 	if salary.From != nil && salary.To != nil {
-		return fmt.Sprintf("%s %d - %d%s", currency, *salary.From, *salary.To, gross)
+		// Changed order: currency symbol after amount (Russian style)
+		return fmt.Sprintf("%d - %d %s%s", *salary.From, *salary.To, currency, gross)
 	} else if salary.From != nil {
-		return fmt.Sprintf("от %s %d%s", currency, *salary.From, gross)
+		return fmt.Sprintf("от %d %s%s", *salary.From, currency, gross)
 	} else if salary.To != nil {
-		return fmt.Sprintf("до %s %d%s", currency, *salary.To, gross)
+		return fmt.Sprintf("до %d %s%s", *salary.To, currency, gross)
 	}
 
 	return "не указана"
@@ -96,7 +97,7 @@ func FormatVacancyList(vacancies []headhunter.VacancyItem, total int) string {
 		}
 		
 		if vacancy.Salary != nil {
-			sb.WriteString(fmt.Sprintf("   💰 %s\n", FormatSalary(vacancy.Salary)))
+			sb.WriteString(fmt.Sprintf("   💰 %s\n", EscapeMarkdown(FormatSalary(vacancy.Salary))))
 		}
 		
 		sb.WriteString(fmt.Sprintf("   📍 %s\n", EscapeMarkdown(vacancy.Area.Name)))
@@ -233,40 +234,6 @@ func FormatSettingsMessage(user *models.User) string {
 	return sb.String()
 }
 
-// EscapeMarkdown escapes special characters for Telegram MarkdownV2
-func EscapeMarkdown(text string) string {
-	// _ * [ ] ( ) ~ ` > # + - = | { } . !
-	replacer := strings.NewReplacer(
-		"_", "\\_",
-		"*", "\\*",
-		"[", "\\[",
-		"]", "\\]",
-		"(", "\\(",
-		")", "\\)",
-		"~", "\\~",
-		"`", "\\`",
-		">", "\\>",
-		"#", "\\#",
-		"+", "\\+",
-		"-", "\\-",
-		"=", "\\=",
-		"|", "\\|",
-		"{", "\\{",
-		"}", "\\}",
-		".", "\\.",
-		"!", "\\!",
-	)
-
-	return replacer.Replace(text)
-}
-
-func TruncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
-}
-
 func FormatFiltersMessage(filters []models.UserFilter) string {
 	if len(filters) == 0 {
 		return "ℹ️ У вас нет установленных фильтров"
@@ -316,4 +283,38 @@ func formatFilterValue(filterType, value string) string {
 	default:
 		return value
 	}
+}
+
+// EscapeMarkdown escapes special characters for Telegram MarkdownV2
+func EscapeMarkdown(text string) string {
+	// _ * [ ] ( ) ~ ` > # + - = | { } . !
+	replacer := strings.NewReplacer(
+		"_", "\\_",
+		"*", "\\*",
+		"[", "\\[",
+		"]", "\\]",
+		"(", "\\(",
+		")", "\\)",
+		"~", "\\~",
+		"`", "\\`",
+		">", "\\>",
+		"#", "\\#",
+		"+", "\\+",
+		"-", "\\-",
+		"=", "\\=",
+		"|", "\\|",
+		"{", "\\{",
+		"}", "\\}",
+		".", "\\.",
+		"!", "\\!",
+	)
+
+	return replacer.Replace(text)
+}
+
+func TruncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }

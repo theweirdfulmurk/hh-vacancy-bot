@@ -151,9 +151,9 @@ func (s *Store) GetUnseenVacancies(ctx context.Context, userID int64, vacancyIDs
 
 	var unseenIDs []string
 
-	_, err := s.sess.
+	rows, err := s.sess.
 		SelectBySql(query, pq.Array(vacancyIDs), userID).
-		LoadContext(ctx, &unseenIDs)
+		Rows()
 
 	if err != nil {
 		s.logger.Error("failed to get unseen vacancies",
@@ -162,6 +162,27 @@ func (s *Store) GetUnseenVacancies(ctx context.Context, userID int64, vacancyIDs
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("get unseen vacancies: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			s.logger.Error("failed to scan vacancy id",
+				zap.Int64("user_id", userID),
+				zap.Error(err),
+			)
+			return nil, fmt.Errorf("scan vacancy id: %w", err)
+		}
+		unseenIDs = append(unseenIDs, id)
+	}
+
+	if err := rows.Err(); err != nil {
+		s.logger.Error("failed during rows iteration",
+			zap.Int64("user_id", userID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("rows iteration: %w", err)
 	}
 
 	s.logger.Debug("unseen vacancies",
