@@ -262,6 +262,21 @@ func sendPaginationControls(ctx *Context, c tele.Context, page, totalPages, days
 	}
 }
 
+func sendPaginationControls(ctx *Context, c tele.Context, page, totalPages, days int) {
+	if totalPages <= 1 {
+		return
+	}
+
+	text := fmt.Sprintf("📄 Страница %d из %d", page+1, totalPages)
+	if days > 0 {
+		text = fmt.Sprintf("%s • за %s", text, utils.FormatDays(days))
+	}
+
+	if _, err := c.Send(text, utils.InlinePaginationKeyboard(page, totalPages, "vacancy_page")); err != nil {
+		ctx.Logger.Warn("failed to send pagination controls", zap.Error(err))
+	}
+}
+
 func cacheVacancies(ctx *Context, vacancies []headhunter.VacancyItem) {
 	dbCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
