@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -16,12 +17,14 @@ import (
 
 // User states for conversation flow
 const (
-	StateIdle            = ""
-	StateAwaitingText    = "awaiting_text"
-	StateAwaitingCity    = "awaiting_city"
-	StateAwaitingSalary  = "awaiting_salary"
-	StateAwaitingExp     = "awaiting_experience"
+	StateIdle             = ""
+	StateAwaitingText     = "awaiting_text"
+	StateAwaitingCity     = "awaiting_city"
+	StateAwaitingSalary   = "awaiting_salary"
+	StateAwaitingExp      = "awaiting_experience"
 	StateAwaitingSchedule = "awaiting_schedule"
+	StateAwaitingPeriod   = "awaiting_period"
+	StateConfirmClear     = "confirm_clear_filters"
 )
 
 // /filters command
@@ -86,6 +89,8 @@ func HandleText(ctx *Context) tele.HandlerFunc {
 			return startExperienceFilter(ctx, c)
 		case "⏰ График":
 			return startScheduleFilter(ctx, c)
+		case "🗓 Период":
+			return startPeriodFilter(ctx, c)
 		case "📊 Показать фильтры":
 			return showFilters(ctx, c)
 		case "🗑 Очистить фильтры":
@@ -391,6 +396,71 @@ func saveSchedule(ctx *Context, c tele.Context, schedule string) error {
 	)
 }
 
+// ==================== Period Filter ====================
+
+func startPeriodFilter(ctx *Context, c tele.Context) error {
+	userID := c.Sender().ID
+
+	if err := setUserState(ctx, userID, StateAwaitingPeriod); err != nil {
+		ctx.Logger.Error("failed to set user state", zap.Error(err))
+	}
+
+	message := "🗓 За какой период показывать вакансии?\n" +
+		fmt.Sprintf("Введите количество дней от %d до %d или выберите на клавиатуре.",
+			models.MinPublishedWithinDays, models.MaxPublishedWithinDays)
+
+	return c.Send(message, utils.PeriodKeyboard())
+}
+
+func handlePeriodFilterInput(ctx *Context, c tele.Context) error {
+	text := strings.TrimSpace(c.Text())
+	userID := c.Sender().ID
+
+	if text == "" || text == "❌ Отмена" {
+		return cancelConversation(ctx, c)
+	}
+
+	days := extractDays(text)
+	if days == 0 {
+		return c.Send(
+			fmt.Sprintf("Не получилось распознать число. Укажите от %d до %d дней.",
+				models.MinPublishedWithinDays, models.MaxPublishedWithinDays),
+			utils.PeriodKeyboard(),
+		)
+	}
+
+	if days < models.MinPublishedWithinDays {
+		days = models.MinPublishedWithinDays
+	}
+	if days > models.MaxPublishedWithinDays {
+		days = models.MaxPublishedWithinDays
+	}
+
+	dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	filter := &models.UserFilter{
+		UserID:      userID,
+		FilterType:  models.FilterTypePublishedWithin,
+		FilterValue: strconv.Itoa(days),
+	}
+
+	if err := ctx.Store.SaveFilter(dbCtx, filter); err != nil {
+		ctx.Logger.Error("failed to save period filter", zap.Error(err))
+		return c.Send("😔 Ошибка при сохранении периода")
+	}
+
+	if err := clearUserState(ctx, userID); err != nil {
+		ctx.Logger.Warn("failed to clear state", zap.Error(err))
+	}
+
+	return c.Send(
+		fmt.Sprintf("✅ Период установлен: *за %s*", utils.EscapeMarkdown(utils.FormatDays(days))),
+		utils.FiltersMenuKeyboard(),
+		tele.ModeMarkdownV2,
+	)
+}
+
 // ==================== Show & Clear Filters ====================
 
 func showFilters(ctx *Context, c tele.Context) error {
@@ -422,6 +492,12 @@ func showFilters(ctx *Context, c tele.Context) error {
 }
 
 func clearFilters(ctx *Context, c tele.Context) error {
+	userID := c.Sender().ID
+
+	if err := setUserState(ctx, userID, StateConfirmClear); err != nil {
+		ctx.Logger.Warn("failed to set confirm clear state", zap.Error(err))
+	}
+
 	return c.Send(
 		"🗑 Вы уверены, что хотите очистить все фильтры?",
 		utils.ConfirmKeyboard(),
@@ -437,6 +513,10 @@ func confirmClearFilters(ctx *Context, c tele.Context) error {
 	if err := ctx.Store.ClearUserFilters(dbCtx, userID); err != nil {
 		ctx.Logger.Error("failed to clear filters", zap.Error(err))
 		return c.Send("😔 Ошибка при очистке фильтров")
+	}
+
+	if err := clearUserState(ctx, userID); err != nil {
+		ctx.Logger.Warn("failed to clear state", zap.Error(err))
 	}
 
 	return c.Send(
@@ -467,9 +547,29 @@ func handleStateInput(ctx *Context, c tele.Context, state string) error {
 			return c.Send("Выберите один из вариантов кнопками ниже", utils.ScheduleKeyboard())
 		}
 		return saveSchedule(ctx, c, txt)
+	case StateAwaitingPeriod:
+		return handlePeriodFilterInput(ctx, c)
+	case StateConfirmClear:
+		return handleClearFiltersConfirm(ctx, c)
 	default:
 		_ = clearUserState(ctx, c.Sender().ID)
 		return c.Reply("Используйте кнопки меню или команды")
+	}
+}
+
+func handleClearFiltersConfirm(ctx *Context, c tele.Context) error {
+	text := strings.TrimSpace(c.Text())
+
+	switch text {
+	case "✅ Да", "Да":
+		return confirmClearFilters(ctx, c)
+	case "❌ Нет", "Нет", "❌ Отмена":
+		return cancelConversation(ctx, c)
+	default:
+		return c.Send(
+			"Пожалуйста, выберите один из вариантов на клавиатуре",
+			utils.ConfirmKeyboard(),
+		)
 	}
 }
 
@@ -502,6 +602,22 @@ func cancelConversation(ctx *Context, c tele.Context) error {
 }
 
 // ==================== Helpers ====================
+
+var digitsRegexp = regexp.MustCompile(`\d+`)
+
+func extractDays(text string) int {
+	match := digitsRegexp.FindString(text)
+	if match == "" {
+		return 0
+	}
+
+	days, err := strconv.Atoi(match)
+	if err != nil {
+		return 0
+	}
+
+	return days
+}
 
 func parseIntervalText(text string) int {
 	switch text {

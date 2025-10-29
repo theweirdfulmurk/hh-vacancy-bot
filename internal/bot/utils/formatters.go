@@ -2,11 +2,14 @@ package utils
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"hh-vacancy-bot/internal/api/headhunter"
 	"hh-vacancy-bot/internal/models"
 )
+
+var snippetHighlightReplacer = strings.NewReplacer("<highlighttext>", "", "</highlighttext>", "")
 
 // Format vacancy for Telegram
 func FormatVacancy(vacancy *headhunter.VacancyItem) string {
@@ -46,12 +49,37 @@ func FormatVacancy(vacancy *headhunter.VacancyItem) string {
 		sb.WriteString(fmt.Sprintf("📋 *Занятость:* %s\n", EscapeMarkdown(vacancy.Employment.Name)))
 	}
 
+	if len(vacancy.ProfessionalRoles) > 0 {
+		roles := make([]string, 0, len(vacancy.ProfessionalRoles))
+		for _, role := range vacancy.ProfessionalRoles {
+			if role.Name != "" {
+				roles = append(roles, role.Name)
+			}
+		}
+		if len(roles) > 0 {
+			sb.WriteString(fmt.Sprintf("🧭 *Профиль:* %s\n", EscapeMarkdown(strings.Join(roles, ", "))))
+		}
+	}
+
+	if vacancy.Snippet != nil {
+		if vacancy.Snippet.Requirement != nil {
+			if requirement := formatSnippetField(*vacancy.Snippet.Requirement); requirement != "" {
+				sb.WriteString(fmt.Sprintf("🗣️ *Требования:* %s\n", EscapeMarkdown(requirement)))
+			}
+		}
+		if vacancy.Snippet.Responsibility != nil {
+			if responsibility := formatSnippetField(*vacancy.Snippet.Responsibility); responsibility != "" {
+				sb.WriteString(fmt.Sprintf("✍️ *Задачи:* %s\n", EscapeMarkdown(responsibility)))
+			}
+		}
+	}
+
 	// Published date
 	publishedDate := vacancy.PublishedAt.Format("02.01.2006")
 	sb.WriteString(fmt.Sprintf("📅 *Опубликовано:* %s\n", EscapeMarkdown(publishedDate)))
 
 	// Link
-	sb.WriteString(fmt.Sprintf("\n🔗 [Открыть вакансию](%s)", vacancy.AlternateURL))
+	sb.WriteString(fmt.Sprintf("\n🔗 [Открыть вакансию](%s)", escapeMarkdownURL(vacancy.AlternateURL)))
 
 	return sb.String()
 }
@@ -91,15 +119,15 @@ func FormatVacancyList(vacancies []headhunter.VacancyItem, total int) string {
 
 	for i, vacancy := range vacancies {
 		sb.WriteString(fmt.Sprintf("*%d\\. %s*\n", i+1, EscapeMarkdown(vacancy.Name)))
-		
+
 		if vacancy.Employer.Name != "" {
 			sb.WriteString(fmt.Sprintf("   🏢 %s\n", EscapeMarkdown(vacancy.Employer.Name)))
 		}
-		
+
 		if vacancy.Salary != nil {
 			sb.WriteString(fmt.Sprintf("   💰 %s\n", EscapeMarkdown(FormatSalary(vacancy.Salary))))
 		}
-		
+
 		sb.WriteString(fmt.Sprintf("   📍 %s\n", EscapeMarkdown(vacancy.Area.Name)))
 		sb.WriteString("\n")
 	}
@@ -161,22 +189,23 @@ func FormatWelcomeMessage(firstName string) string {
 		name = "друг"
 	}
 
-	return fmt.Sprintf(`👋 Привет, *%s*\!
+	var sb strings.Builder
+	sb.WriteString("👋 Привет, *")
+	sb.WriteString(EscapeMarkdown(name))
+	sb.WriteString("*\n")
+	sb.WriteString(EscapeMarkdown("Я помогаю находить вакансии для лингвистов и переводчиков на HeadHunter."))
+	sb.WriteString("\n\n")
+	sb.WriteString("• ")
+	sb.WriteString(EscapeMarkdown("Базовый поиск уже включает «лингвист», «переводчик», «филолог»"))
+	sb.WriteString("\n")
+	sb.WriteString("• ")
+	sb.WriteString(EscapeMarkdown("Карточки выделяют языковые требования и профиль"))
+	sb.WriteString("\n\n")
+	sb.WriteString(EscapeMarkdown("Команды: /vacancies, /settings, /help"))
+	sb.WriteString("\n\n")
+	sb.WriteString(EscapeMarkdown("Добавьте свой язык, город и условия в /filters"))
 
-Я бот для поиска вакансий на HeadHunter\.
-
-*Что я умею:*
-• Искать вакансии по вашим фильтрам
-• Автоматически уведомлять о новых вакансиях
-• Фильтровать по городу, зарплате, опыту и графику
-
-*Команды:*
-/filters \- настроить фильтры поиска
-/vacancies \- получить вакансии
-/settings \- настройки уведомлений
-/help \- справка
-
-Начните с настройки фильтров \- /filters`, EscapeMarkdown(name))
+	return sb.String()
 }
 
 func FormatHelpMessage() string {
@@ -207,9 +236,10 @@ func FormatHelpMessage() string {
 }
 
 func FormatNoFiltersMessage() string {
-	return `⚠️ *У вас нет установленных фильтров*
+	return `⚠️ *Фильтры не заданы*
 
-Настройте фильтры командой /filters, чтобы начать поиск вакансий\.`
+Базовый поиск по словам «лингвист», «переводчик», «филолог» уже активен.
+Добавьте язык, город и условия через /filters, чтобы получать более точные вакансии\.`
 }
 
 func FormatNoVacanciesMessage() string {
@@ -245,8 +275,8 @@ func FormatFiltersMessage(filters []models.UserFilter) string {
 	for _, filter := range filters {
 		filterName := getFilterDisplayName(filter.FilterType)
 		filterValue := formatFilterValue(filter.FilterType, filter.FilterValue)
-		
-		sb.WriteString(fmt.Sprintf("• *%s:* %s\n", 
+
+		sb.WriteString(fmt.Sprintf("• *%s:* %s\n",
 			EscapeMarkdown(filterName),
 			EscapeMarkdown(filterValue),
 		))
@@ -267,6 +297,8 @@ func getFilterDisplayName(filterType string) string {
 		return "Опыт"
 	case models.FilterTypeSchedule:
 		return "График"
+	case models.FilterTypePublishedWithin:
+		return "Период публикации"
 	default:
 		return filterType
 	}
@@ -280,9 +312,35 @@ func formatFilterValue(filterType, value string) string {
 		return models.GetExperienceDisplayName(value)
 	case models.FilterTypeSchedule:
 		return models.GetScheduleDisplayName(value)
+	case models.FilterTypePublishedWithin:
+		if days, err := strconv.Atoi(value); err == nil {
+			return "за " + FormatDays(days)
+		}
+		return "за " + value + " дней"
 	default:
 		return value
 	}
+}
+
+func FormatDays(days int) string {
+	if days <= 0 {
+		return "0 дней"
+	}
+
+	remainder10 := days % 10
+	remainder100 := days % 100
+
+	var suffix string
+	switch {
+	case remainder10 == 1 && remainder100 != 11:
+		suffix = "день"
+	case remainder10 >= 2 && remainder10 <= 4 && (remainder100 < 12 || remainder100 > 14):
+		suffix = "дня"
+	default:
+		suffix = "дней"
+	}
+
+	return fmt.Sprintf("%d %s", days, suffix)
 }
 
 // EscapeMarkdown escapes special characters for Telegram MarkdownV2
@@ -312,9 +370,42 @@ func EscapeMarkdown(text string) string {
 	return replacer.Replace(text)
 }
 
+func escapeMarkdownURL(url string) string {
+	replacer := strings.NewReplacer(
+		"(", "\\(",
+		")", "\\)",
+		"\\", "\\\\",
+	)
+
+	return replacer.Replace(url)
+}
+
 func TruncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	if maxLen <= 0 {
+		return ""
+	}
+
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+
+	const ellipsis = "..."
+	ellipsisLen := len([]rune(ellipsis))
+
+	if maxLen <= ellipsisLen {
+		return string(runes[:maxLen])
+	}
+
+	return string(runes[:maxLen-ellipsisLen]) + ellipsis
+}
+
+func formatSnippetField(raw string) string {
+	cleaned := snippetHighlightReplacer.Replace(raw)
+	cleaned = strings.ReplaceAll(cleaned, "\n", " ")
+	cleaned = strings.Join(strings.Fields(cleaned), " ")
+	if cleaned == "" {
+		return ""
+	}
+	return TruncateString(cleaned, 180)
 }

@@ -43,6 +43,9 @@ func HandleVacancies(ctx *Context) tele.HandlerFunc {
 		}
 
 		searchParams := buildSearchParams(filtersMap)
+		if ctx.Config.MaxVacanciesPerCheck > 0 {
+			searchParams.PerPage = ctx.Config.MaxVacanciesPerCheck
+		}
 
 		response, err := ctx.HHClient.SearchVacancies(dbCtx, searchParams)
 		if err != nil {
@@ -82,25 +85,44 @@ func HandleVacancies(ctx *Context) tele.HandlerFunc {
 			}
 		}
 
+		var delivered []headhunter.VacancyItem
+
 		if len(unseenVacancies) == 0 {
-			return c.Send(
-				"ℹ️ *Новых вакансий нет*\n\nВсе найденные вакансии уже были показаны ранее\\.",
-				tele.ModeMarkdownV2,
+			infoMessage := fmt.Sprintf(
+				"ℹ️ *Новых вакансий нет*\n\nПоказываю вакансии за %s.",
+				utils.EscapeMarkdown(utils.FormatDays(searchParams.PublishedWithinDays)),
 			)
+
+			if err := c.Send(infoMessage, tele.ModeMarkdownV2); err != nil {
+				ctx.Logger.Error("failed to send no-new-vacancies message", zap.Error(err))
+				return c.Reply("😔 Ошибка при отправке вакансий")
+			}
+
+			if err := deliverVacancyCards(ctx, c, response.Items, userID); err != nil {
+				ctx.Logger.Error("failed to send historical vacancies", zap.Error(err))
+				return c.Reply("😔 Ошибка при отправке вакансий")
+			}
+
+			delivered = response.Items
+		} else {
+			maxVacancies := ctx.Config.MaxVacanciesPerCheck
+			if maxVacancies > 0 && len(unseenVacancies) > maxVacancies {
+				unseenVacancies = unseenVacancies[:maxVacancies]
+			}
+
+			if err := sendVacanciesToUser(ctx, c, unseenVacancies, userID); err != nil {
+				ctx.Logger.Error("failed to send vacancies", zap.Error(err))
+				return c.Reply("😔 Ошибка при отправке вакансий")
+			}
+
+			delivered = unseenVacancies
 		}
 
-		maxVacancies := ctx.Config.MaxVacanciesPerCheck
-		if len(unseenVacancies) > maxVacancies {
-			unseenVacancies = unseenVacancies[:maxVacancies]
+		if len(delivered) > 0 {
+			go markVacanciesAsSeen(ctx, userID, delivered)
 		}
 
-		err = sendVacanciesToUser(ctx, c, unseenVacancies, userID)
-		if err != nil {
-			ctx.Logger.Error("failed to send vacancies", zap.Error(err))
-			return c.Reply("😔 Ошибка при отправке вакансий")
-		}
-
-		go markVacanciesAsSeen(ctx, userID, unseenVacancies)
+		sendPaginationControls(ctx, c, response.Page, response.Pages, searchParams.PublishedWithinDays)
 
 		return nil
 	}
@@ -108,8 +130,9 @@ func HandleVacancies(ctx *Context) tele.HandlerFunc {
 
 func buildSearchParams(filters map[string]string) headhunter.VacancySearchParams {
 	params := headhunter.VacancySearchParams{
-		Page:    0,
-		PerPage: 20,
+		Page:                0,
+		PerPage:             20,
+		PublishedWithinDays: models.DefaultPublishedWithinDays,
 	}
 
 	if text, ok := filters[models.FilterTypeText]; ok {
@@ -134,6 +157,27 @@ func buildSearchParams(filters map[string]string) headhunter.VacancySearchParams
 		params.Schedule = schedule
 	}
 
+	days := params.PublishedWithinDays
+	if raw, ok := filters[models.FilterTypePublishedWithin]; ok {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			if parsed < models.MinPublishedWithinDays {
+				parsed = models.MinPublishedWithinDays
+			}
+			if parsed > models.MaxPublishedWithinDays {
+				parsed = models.MaxPublishedWithinDays
+			}
+			days = parsed
+		}
+	}
+
+	params.PublishedWithinDays = days
+
+	now := time.Now()
+	dateTo := now
+	from := now.Add(-time.Duration(days) * 24 * time.Hour)
+	params.DateTo = &dateTo
+	params.DateFrom = &from
+
 	return params
 }
 
@@ -147,6 +191,10 @@ func sendVacanciesToUser(ctx *Context, c tele.Context, vacancies []headhunter.Va
 		return err
 	}
 
+	return deliverVacancyCards(ctx, c, vacancies, userID)
+}
+
+func deliverVacancyCards(ctx *Context, c tele.Context, vacancies []headhunter.VacancyItem, userID int64) error {
 	for i, vacancy := range vacancies {
 		message := utils.FormatVacancy(&vacancy)
 
@@ -155,6 +203,7 @@ func sendVacanciesToUser(ctx *Context, c tele.Context, vacancies []headhunter.Va
 		if err := c.Send(message, keyboard, tele.ModeMarkdownV2); err != nil {
 			ctx.Logger.Error("failed to send vacancy",
 				zap.Int("index", i),
+				zap.Int64("user_id", userID),
 				zap.String("vacancy_id", vacancy.ID),
 				zap.Error(err),
 			)
@@ -167,6 +216,21 @@ func sendVacanciesToUser(ctx *Context, c tele.Context, vacancies []headhunter.Va
 	}
 
 	return nil
+}
+
+func sendPaginationControls(ctx *Context, c tele.Context, page, totalPages, days int) {
+	if totalPages <= 1 {
+		return
+	}
+
+	text := fmt.Sprintf("📄 Страница %d из %d", page+1, totalPages)
+	if days > 0 {
+		text = fmt.Sprintf("%s • за %s", text, utils.FormatDays(days))
+	}
+
+	if _, err := c.Send(text, utils.InlinePaginationKeyboard(page, totalPages, "vacancy_page")); err != nil {
+		ctx.Logger.Warn("failed to send pagination controls", zap.Error(err))
+	}
 }
 
 func cacheVacancies(ctx *Context, vacancies []headhunter.VacancyItem) {

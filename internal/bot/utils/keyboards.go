@@ -31,6 +31,7 @@ func FiltersMenuKeyboard() *tele.ReplyMarkup {
 	btnSalary := menu.Text("💰 Зарплата")
 	btnExperience := menu.Text("💼 Опыт")
 	btnSchedule := menu.Text("⏰ График")
+	btnPeriod := menu.Text("🗓 Период")
 	btnShow := menu.Text("📊 Показать фильтры")
 	btnClear := menu.Text("🗑 Очистить фильтры")
 	btnBack := menu.Text("◀️ Назад")
@@ -38,7 +39,7 @@ func FiltersMenuKeyboard() *tele.ReplyMarkup {
 	menu.Reply(
 		menu.Row(btnText, btnCity),
 		menu.Row(btnSalary, btnExperience),
-		menu.Row(btnSchedule),
+		menu.Row(btnSchedule, btnPeriod),
 		menu.Row(btnShow, btnClear),
 		menu.Row(btnBack),
 	)
@@ -86,7 +87,7 @@ func ScheduleKeyboard() *tele.ReplyMarkup {
 
 func CancelKeyboard() *tele.ReplyMarkup {
 	menu := &tele.ReplyMarkup{ResizeKeyboard: true}
-	
+
 	btnCancel := menu.Text("❌ Отмена")
 	menu.Reply(menu.Row(btnCancel))
 
@@ -163,20 +164,40 @@ func InlinePaginationKeyboard(page, totalPages int, callbackPrefix string) *tele
 	var buttons []tele.Btn
 
 	if page > 0 {
-		btnPrev := menu.Data("⬅️ Назад", callbackPrefix+"_prev", strconv.Itoa(page-1))
+		btnPrev := menu.Data("⬅️ Назад", callbackPrefix, "goto:"+strconv.Itoa(page-1))
 		buttons = append(buttons, btnPrev)
 	}
 
 	// show 1-based current page like "2/7"
-	btnCurrent := menu.Data(strconv.Itoa(page+1)+"/"+strconv.Itoa(totalPages), callbackPrefix+"_current", "noop")
+	btnCurrent := menu.Data(strconv.Itoa(page+1)+"/"+strconv.Itoa(totalPages), callbackPrefix, "noop")
 	buttons = append(buttons, btnCurrent)
 
 	if page < totalPages-1 {
-		btnNext := menu.Data("Вперёд ➡️", callbackPrefix+"_next", strconv.Itoa(page+1))
+		btnNext := menu.Data("Вперёд ➡️", callbackPrefix, "goto:"+strconv.Itoa(page+1))
 		buttons = append(buttons, btnNext)
 	}
 
 	menu.Inline(menu.Row(buttons...))
+	return menu
+}
+
+func PeriodKeyboard() *tele.ReplyMarkup {
+	menu := &tele.ReplyMarkup{ResizeKeyboard: true}
+
+	btn7 := menu.Text("7 дней")
+	btn14 := menu.Text("14 дней")
+	btn30 := menu.Text("30 дней")
+	btn60 := menu.Text("60 дней")
+	btn90 := menu.Text("90 дней")
+	btnCancel := menu.Text("❌ Отмена")
+
+	menu.Reply(
+		menu.Row(btn7, btn14),
+		menu.Row(btn30, btn60),
+		menu.Row(btn90),
+		menu.Row(btnCancel),
+	)
+
 	return menu
 }
 
