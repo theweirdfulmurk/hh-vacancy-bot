@@ -22,9 +22,16 @@ type UserFilter struct {
 }
 
 const (
-	FilterTypeText       = "text"
-	FilterTypeArea       = "area"
-	FilterTypeSalary     = "salary"
-	FilterTypeExperience = "experience"
-	FilterTypeSchedule   = "schedule"
+	FilterTypeText            = "text"
+	FilterTypeArea            = "area"
+	FilterTypeSalary          = "salary"
+	FilterTypeExperience      = "experience"
+	FilterTypeSchedule        = "schedule"
+	FilterTypePublishedWithin = "published_within"
+)
+
+const (
+	DefaultPublishedWithinDays = 30
+	MinPublishedWithinDays     = 1
+	MaxPublishedWithinDays     = 180
 )

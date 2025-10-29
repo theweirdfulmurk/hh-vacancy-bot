@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"hh-vacancy-bot/internal/bot/utils"
@@ -10,6 +11,8 @@ import (
 	"go.uber.org/zap"
 	tele "gopkg.in/telebot.v3"
 )
+
+const defaultLinguistQuery = "лингвист OR переводчик OR филолог"
 
 // /start command
 func HandleStart(ctx *Context) tele.HandlerFunc {
@@ -34,6 +37,8 @@ func HandleStart(ctx *Context) tele.HandlerFunc {
 			return c.Send("😔 Ошибка. Попробуйте позже.")
 		}
 
+		userCreated := false
+
 		if user == nil {
 			user = &models.User{
 				ID:             userID,
@@ -48,6 +53,7 @@ func HandleStart(ctx *Context) tele.HandlerFunc {
 				return c.Send("😔 Ошибка при регистрации. Попробуйте позже.")
 			}
 			ctx.Logger.Info("new user created", zap.Int64("user_id", userID))
+			userCreated = true
 		} else {
 			needUpdate := false
 			if (user.Username == nil && userName != "") || (user.Username != nil && *user.Username != userName) {
@@ -70,6 +76,21 @@ func HandleStart(ctx *Context) tele.HandlerFunc {
 			ctx.Logger.Debug("existing user", zap.Int64("user_id", userID))
 		}
 
+		if userCreated {
+			if err := setDefaultLinguistFilter(dbCtx, ctx, userID); err != nil {
+				ctx.Logger.Warn("failed to set default linguist filter", zap.Int64("user_id", userID), zap.Error(err))
+			}
+		} else {
+			hasFilters, err := ctx.Store.HasFilters(dbCtx, userID)
+			if err != nil {
+				ctx.Logger.Warn("failed to check user filters", zap.Int64("user_id", userID), zap.Error(err))
+			} else if !hasFilters {
+				if err := setDefaultLinguistFilter(dbCtx, ctx, userID); err != nil {
+					ctx.Logger.Warn("failed to set default linguist filter", zap.Int64("user_id", userID), zap.Error(err))
+				}
+			}
+		}
+
 		// welcome
 		name := firstName
 		if name == "" {
@@ -90,4 +111,34 @@ func stringPtr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func setDefaultLinguistFilter(ctx context.Context, handlerCtx *Context, userID int64) error {
+	textFilter := &models.UserFilter{
+		UserID:      userID,
+		FilterType:  models.FilterTypeText,
+		FilterValue: defaultLinguistQuery,
+	}
+
+	if err := handlerCtx.Store.SaveFilter(ctx, textFilter); err != nil {
+		return err
+	}
+
+	periodFilter := &models.UserFilter{
+		UserID:      userID,
+		FilterType:  models.FilterTypePublishedWithin,
+		FilterValue: strconv.Itoa(models.DefaultPublishedWithinDays),
+	}
+
+	if err := handlerCtx.Store.SaveFilter(ctx, periodFilter); err != nil {
+		return err
+	}
+
+	handlerCtx.Logger.Info("default linguist filter applied",
+		zap.Int64("user_id", userID),
+		zap.String("query", defaultLinguistQuery),
+		zap.Int("days", models.DefaultPublishedWithinDays),
+	)
+
+	return nil
 }

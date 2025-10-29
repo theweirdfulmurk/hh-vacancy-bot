@@ -3,9 +3,11 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"hh-vacancy-bot/internal/bot/middleware"
 	"hh-vacancy-bot/internal/bot/utils"
 	"hh-vacancy-bot/internal/models"
 
@@ -30,48 +32,69 @@ func HandleCallback(ctx *Context) tele.HandlerFunc {
 			zap.String("callback_id", cb.ID),
 		)
 
-		// Parse callback data
-		data := cb.Data
-		
-		// Remove form feed character if present (telebot adds \f prefix)
-		if len(data) > 0 && data[0] == '\f' {
-			data = data[1:]
+		rawPayload := strings.TrimPrefix(cb.Data, "\f")
+		unique := cb.Unique
+
+		payload := ""
+		if rawPayload != "" {
+			parts := strings.SplitN(rawPayload, "|", 2)
+			if unique == "" {
+				unique = parts[0]
+			}
+			if len(parts) > 1 {
+				payload = parts[1]
+			}
+		} else if unique == "" {
+			unique = rawPayload
 		}
-		
-		parts := strings.Split(data, ":")
+
+		uniqueParts := []string{}
+		if unique != "" {
+			uniqueParts = strings.Split(unique, ":")
+		}
+
+		payloadParts := []string{}
+		if payload != "" {
+			payloadParts = strings.Split(payload, ":")
+		}
+
+		action := ""
+		if len(uniqueParts) > 0 && uniqueParts[0] != "" {
+			action = uniqueParts[0]
+		} else if len(payloadParts) > 0 {
+			action = payloadParts[0]
+		}
+
 		ctx.Logger.Info("parsed callback",
-			zap.Strings("parts", parts),
-			zap.Int("parts_count", len(parts)),
+			zap.String("unique", unique),
+			zap.String("raw_payload", rawPayload),
+			zap.String("payload", payload),
+			zap.Strings("unique_parts", uniqueParts),
+			zap.Strings("payload_parts", payloadParts),
 		)
-		
-		if len(parts) < 1 {
-			ctx.Logger.Warn("invalid callback format", zap.String("data", data))
-			return c.Respond(&tele.CallbackResponse{Text: "❌ Неверный формат"})
-		}
-		action := parts[0]
-		
-		ctx.Logger.Info("routing callback", zap.String("action", action))
 
 		// Route to appropriate handler
 		switch action {
 		case "filter_delete":
-			return handleFilterDelete(ctx, c, parts)
+			return handleFilterDelete(ctx, c, uniqueParts)
 		case "settings_toggle":
 			return handleSettingsToggle(ctx, c)
 		case "settings_interval":
-			return handleSettingsInterval(ctx, c, parts)
+			return handleSettingsInterval(ctx, c, uniqueParts)
 		case "vacancy_page":
-			return handleVacancyPage(ctx, c, parts)
+			return handleVacancyPage(ctx, c, payloadParts)
 		case "confirm_yes":
 			return handleConfirmYes(ctx, c)
 		case "confirm_no":
 			return handleConfirmNo(ctx, c)
 		case "choose_area":
-			return handleChooseArea(ctx, c, parts)
+			return handleChooseArea(ctx, c, uniqueParts)
 		default:
 			ctx.Logger.Warn("unknown callback action",
 				zap.String("action", action),
-				zap.String("data", data),
+				zap.String("unique", unique),
+				zap.String("raw_payload", rawPayload),
+				zap.String("payload", payload),
 			)
 			return c.Respond(&tele.CallbackResponse{Text: "❓ Неизвестное действие"})
 		}
@@ -97,7 +120,7 @@ func handleFilterDelete(ctx *Context, c tele.Context, parts []string) error {
 	}
 
 	displayName := getFilterDisplayName(filterType)
-	
+
 	// Try to update the message
 	if err := c.Edit(
 		fmt.Sprintf("✅ Фильтр *%s* удалён", utils.EscapeMarkdown(displayName)),
@@ -164,15 +187,115 @@ func handleSettingsInterval(ctx *Context, c tele.Context, parts []string) error 
 // ==================== Vacancy Pagination ====================
 
 func handleVacancyPage(ctx *Context, c tele.Context, parts []string) error {
-	if len(parts) < 2 {
+	if len(parts) == 0 {
 		return c.Respond(&tele.CallbackResponse{Text: "❌ Неверный формат"})
 	}
 
-	// TODO: Implement pagination logic
-	// For now, just acknowledge
-	return c.Respond(&tele.CallbackResponse{
-		Text: "📄 Переход на страницу...",
-	})
+	action := parts[0]
+
+	switch action {
+	case "noop":
+		return c.Respond(&tele.CallbackResponse{Text: "📄 Уже на этой странице"})
+	case "goto":
+		if len(parts) < 2 {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ Нет номера страницы"})
+		}
+
+		targetPage, err := strconv.Atoi(parts[1])
+		if err != nil || targetPage < 0 {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ Неверная страница"})
+		}
+
+		userID := c.Sender().ID
+
+		dbCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		filtersMap, err := ctx.Store.GetFiltersMap(dbCtx, userID)
+		if err != nil {
+			ctx.Logger.Error("failed to load filters for pagination", zap.Error(err))
+			return c.Respond(&tele.CallbackResponse{Text: "😔 Ошибка фильтров"})
+		}
+		if len(filtersMap) == 0 {
+			return c.Respond(&tele.CallbackResponse{Text: "ℹ️ Настройте фильтры через /filters"})
+		}
+
+		if err := middleware.CheckHHAPIRateLimit(ctx.Cache, ctx.Logger); err != nil {
+			ctx.Logger.Warn("HH API rate limit (pagination)", zap.Error(err))
+			return c.Respond(&tele.CallbackResponse{Text: "⚠️ Попробуйте позже"})
+		}
+
+		params := buildSearchParams(filtersMap)
+		if ctx.Config.MaxVacanciesPerCheck > 0 {
+			params.PerPage = ctx.Config.MaxVacanciesPerCheck
+		}
+		params.Page = targetPage
+
+		response, err := ctx.HHClient.SearchVacancies(dbCtx, params)
+		if err != nil {
+			ctx.Logger.Error("failed to fetch vacancy page", zap.Error(err))
+			return c.Respond(&tele.CallbackResponse{Text: "😔 Ошибка запроса"})
+		}
+
+		totalPages := response.Pages
+		if totalPages == 0 {
+			totalPages = 1
+		}
+
+		if targetPage >= totalPages {
+			return c.Respond(&tele.CallbackResponse{Text: "⚠️ Страница недоступна"})
+		}
+
+		indicator := fmt.Sprintf("📄 Страница %d из %d", targetPage+1, totalPages)
+		if params.PublishedWithinDays > 0 {
+			indicator = fmt.Sprintf("%s • за %s", indicator, utils.FormatDays(params.PublishedWithinDays))
+		}
+
+		if err := c.Edit(indicator, utils.InlinePaginationKeyboard(targetPage, totalPages, "vacancy_page")); err != nil {
+			ctx.Logger.Warn("failed to edit pagination message", zap.Error(err))
+		}
+
+		cleanupPaginationMessages(ctx, c, userID)
+
+		go cacheVacancies(ctx, response.Items)
+
+		if len(response.Items) == 0 {
+			if err := c.Send("🤷 На этой странице вакансий нет"); err != nil {
+				ctx.Logger.Warn("failed to send empty page message", zap.Error(err))
+			}
+			return c.Respond(&tele.CallbackResponse{Text: "ℹ️ Нет вакансий"})
+		}
+
+		var messageIDs []int
+
+		header := fmt.Sprintf("📄 *Вакансии — страница %d/%d*", targetPage+1, totalPages)
+		headerMsg, err := c.Bot().Send(
+			c.Chat(),
+			header,
+			&tele.SendOptions{ParseMode: tele.ModeMarkdownV2},
+		)
+		if err != nil {
+			ctx.Logger.Error("failed to send pagination header", zap.Error(err))
+		} else {
+			messageIDs = append(messageIDs, headerMsg.ID)
+		}
+
+		cardMessageIDs, err := deliverVacancyCards(ctx, c, response.Items, userID)
+		if err != nil {
+			ctx.Logger.Error("failed to send vacancies page", zap.Error(err))
+			return c.Respond(&tele.CallbackResponse{Text: "😔 Ошибка отправки"})
+		}
+
+		messageIDs = append(messageIDs, cardMessageIDs...)
+
+		rememberPaginationMessages(ctx, userID, messageIDs)
+
+		go markVacanciesAsSeen(ctx, userID, response.Items)
+
+		return c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("📄 Стр. %d", targetPage+1)})
+	default:
+		return c.Respond(&tele.CallbackResponse{Text: "❌ Неверный формат"})
+	}
 }
 
 // ==================== Confirmation ====================
@@ -205,7 +328,7 @@ func handleChooseArea(ctx *Context, c tele.Context, parts []string) error {
 		ctx.Logger.Warn("choose_area callback without area ID", zap.Strings("parts", parts))
 		return c.Respond(&tele.CallbackResponse{Text: "❌ Неверный формат"})
 	}
-	
+
 	areaID := parts[1]
 	userID := c.Sender().ID
 
@@ -223,7 +346,7 @@ func handleChooseArea(ctx *Context, c tele.Context, parts []string) error {
 		FilterType:  models.FilterTypeArea,
 		FilterValue: areaID,
 	}
-	
+
 	if err := ctx.Store.SaveFilter(dbCtx, filter); err != nil {
 		ctx.Logger.Error("failed to save city filter", zap.Error(err))
 		return c.Respond(&tele.CallbackResponse{Text: "😔 Ошибка при сохранении"})
@@ -249,7 +372,7 @@ func handleChooseArea(ctx *Context, c tele.Context, parts []string) error {
 		utils.FiltersMenuKeyboard(),
 		tele.ModeMarkdownV2,
 	)
-	
+
 	if editErr != nil {
 		ctx.Logger.Warn("failed to edit message", zap.Error(editErr))
 		// Fallback: send new message if edit fails
